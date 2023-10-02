@@ -38,7 +38,7 @@ func main() {
 	proxyPort := flag.String("p", ":0", "Use as a proxy with specified port")
 	contentDirectory := flag.String("d", "content_jpg", "Content directory")
 	contentFrameRate := flag.Int("f", 30, "Frame rate that is used when using files instead of proxy")
-	signallingIP := flag.String("s", "127.0.0.1:5678", "Signalling server IP")
+	signalingIP := flag.String("s", "127.0.0.1:5678", "Signaling server IP")
 	numberOfClients := flag.Int("c", 1, "Number of clients")
 	resultDirectory := flag.String("m", "", "Result directory")
 	flag.Parse()
@@ -116,7 +116,7 @@ func main() {
 
 	var state = Idle
 	println("Current state:", state)
-	NewWSServer(*signallingIP, wsNewUserCb)
+	NewWSServer(*signalingIP, wsNewUserCb)
 	// Infinite loop sending aggregate frames every 33ms
 
 	//select {}
@@ -248,9 +248,9 @@ func NewWebrtcAPI(peerConnections map[uint64]*PeerConnection) *webrtc.API {
 func wsNewUserCb(wsConn *websocket.Conn) {
 	peerConnections[clientCounter] = NewPeerConnection(clientCounter, wsConn, wsHandlerMessageCbFunc)
 	clientCounter++
-	if int(clientCounter) == nClients {
-		proxyConn.StartListening()
-	}
+	//if int(clientCounter) == nClients {
+	//	proxyConn.StartListening()
+	//}
 }
 
 func wsHandlerMessageCbFunc(wsPacket WebsocketPacket) {
