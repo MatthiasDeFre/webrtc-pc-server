@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"time"
 
@@ -34,9 +35,10 @@ var peerConnections map[uint64]*PeerConnection
 var api *webrtc.API
 var nClients int
 var frameResultwriter *FrameResultWriter
+var virtualWallFilterIp string
 
 func main() {
-	useVirtualWall := flag.Bool("v", false, "Use virtual wall ip filter")
+	virtualWallIp := flag.String("v", "", "Use virtual wall ip filter")
 	proxyPort := flag.String("p", ":0", "Use as a proxy with specified port")
 	contentDirectory := flag.String("d", "content_jpg", "Content directory")
 	contentFrameRate := flag.Int("f", 30, "Frame rate that is used when using files instead of proxy")
@@ -47,7 +49,6 @@ func main() {
 	frameResultwriter = NewFrameResultWriter(*resultDirectory, 5)
 	fileCont, _ := os.OpenFile(*resultDirectory+"_cont.csv", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	fileCont.WriteString("time;estimated_bitrate;loss_rate;delay_rate;loss\n")
-	print(*useVirtualWall)
 	nClients = *numberOfClients
 	useProxy := false
 	if *proxyPort != ":0" {
@@ -68,13 +69,16 @@ func main() {
 	peerConnections = make(map[uint64]*PeerConnection)
 	settingEngine := webrtc.SettingEngine{}
 	settingEngine.SetSCTPMaxReceiveBufferSize(16 * 1024 * 1024)
-
+	if *virtualWallIp != "" {
+		virtualWallFilterIp = *virtualWallIp
+		settingEngine.SetIPFilter(VirtualWallFilter)
+	}
 	i := &interceptor.Registry{}
 	m := NewMediaEngine()
 	// Sender side
 
 	congestionController, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
-		return gcc.NewSendSideBWE(gcc.SendSideBWEMinBitrate(75_000*8), gcc.SendSideBWEInitialBitrate(75_000_000), gcc.SendSideBWEMaxBitrate(262_744_320))
+		return gcc.NewSendSideBWE(gcc.SendSideBWEMinBitrate(75_000*8), gcc.SendSideBWEInitialBitrate(15_000_000), gcc.SendSideBWEMaxBitrate(262_744_320))
 	})
 	if err != nil {
 		panic(err)
@@ -288,4 +292,11 @@ func wsHandlerMessageCbFunc(wsPacket WebsocketPacket) {
 
 func wsMessageReceivedCb(wsPacket WebsocketPacket) {
 
+}
+
+func VirtualWallFilter(addr net.IP) bool {
+	if addr.String() == virtualWallFilterIp {
+		return true
+	}
+	return false
 }
