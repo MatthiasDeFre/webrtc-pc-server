@@ -123,30 +123,30 @@ func (t *TranscoderFiles) EncodeFrame(data []byte) *Frame {
 	//transcodedData := t.lEnc.EncodeMultiFrame(data)
 	tempBitrate := (t.estimatedBitrate) / 8 / 30
 	fileData := make([]byte, 0)
-	if tempBitrate >= uint32(t.l0Size[t.frameCounter]) {
-		tempBitrate -= uint32(t.l0Size[t.frameCounter])
-		fileData = append(fileData, t.l0[t.frameCounter]...)
-		if tempBitrate >= uint32(t.l1Size[t.frameCounter]) {
-			tempBitrate -= uint32(t.l1Size[t.frameCounter])
-			fileData = append(fileData, t.l1[t.frameCounter]...)
-			if tempBitrate >= uint32(t.l2Size[t.frameCounter]) {
-				tempBitrate -= uint32(t.l2Size[t.frameCounter])
-				fileData = append(fileData, t.l2[t.frameCounter]...)
+	if tempBitrate >= uint32(t.l0Size[t.fileCounter]) {
+		tempBitrate -= uint32(t.l0Size[t.fileCounter])
+		fileData = append(fileData, t.l0[t.fileCounter]...)
+		if tempBitrate >= uint32(t.l1Size[t.fileCounter]) {
+			tempBitrate -= uint32(t.l1Size[t.fileCounter])
+			fileData = append(fileData, t.l1[t.fileCounter]...)
+			if tempBitrate >= uint32(t.l2Size[t.fileCounter]) {
+				tempBitrate -= uint32(t.l2Size[t.fileCounter])
+				fileData = append(fileData, t.l2[t.fileCounter]...)
 			}
-		} else if tempBitrate >= uint32(t.l2Size[t.frameCounter]) {
-			tempBitrate -= uint32(t.l2Size[t.frameCounter])
-			fileData = append(fileData, t.l2[t.frameCounter]...)
+		} else if tempBitrate >= uint32(t.l2Size[t.fileCounter]) {
+			tempBitrate -= uint32(t.l2Size[t.fileCounter])
+			fileData = append(fileData, t.l2[t.fileCounter]...)
 		}
-	} else if tempBitrate >= uint32(t.l1Size[t.frameCounter]) {
-		tempBitrate -= uint32(t.l1Size[t.frameCounter])
-		fileData = append(fileData, t.l1[t.frameCounter]...)
-		if tempBitrate >= uint32(t.l2Size[t.frameCounter]) {
-			tempBitrate -= uint32(t.l2Size[t.frameCounter])
-			fileData = append(fileData, t.l2[t.frameCounter]...)
+	} else if tempBitrate >= uint32(t.l1Size[t.fileCounter]) {
+		tempBitrate -= uint32(t.l1Size[t.fileCounter])
+		fileData = append(fileData, t.l1[t.fileCounter]...)
+		if tempBitrate >= uint32(t.l2Size[t.fileCounter]) {
+			tempBitrate -= uint32(t.l2Size[t.fileCounter])
+			fileData = append(fileData, t.l2[t.fileCounter]...)
 		}
-	} else if tempBitrate >= uint32(t.l2Size[t.frameCounter]) {
-		tempBitrate -= uint32(t.l2Size[t.frameCounter])
-		fileData = append(fileData, t.l2[t.frameCounter]...)
+	} else if tempBitrate >= uint32(t.l2Size[t.fileCounter]) {
+		tempBitrate -= uint32(t.l2Size[t.fileCounter])
+		fileData = append(fileData, t.l2[t.fileCounter]...)
 	}
 	if uint32(len(fileData)) == 0 {
 		return nil
