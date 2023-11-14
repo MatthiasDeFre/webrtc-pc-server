@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
+	"io/ioutil"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -24,8 +28,33 @@ type Transcoder interface {
 	NextFrame() []byte
 }
 
+func readFiles(directory string) ([][]byte, []int64, error) {
+	var fileContents [][]byte
+	var fileSizes []int64
+
+	files, err := ioutil.ReadDir(directory)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	for _, file := range files {
+		filePath := filepath.Join(directory, file.Name())
+
+		// Read file content
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			return nil, nil, err
+		}
+		fileContents = append(fileContents, content)
+
+		// Get file size
+		fileSizes = append(fileSizes, file.Size())
+	}
+
+	return fileContents, fileSizes, nil
+}
+
 type TranscoderFiles struct {
-	frames           []FileData
 	frameCounter     uint32
 	isReady          bool
 	fileCounter      uint32
@@ -33,6 +62,14 @@ type TranscoderFiles struct {
 	estimatedBitrate uint32
 	prevFrameTime    int64
 	frameRate        uint32
+
+	l0 [][]byte
+	l1 [][]byte
+	l2 [][]byte
+
+	l0Size []int64
+	l1Size []int64
+	l2Size []int64
 }
 
 func (f *Frame) Bytes() []byte {
@@ -45,8 +82,22 @@ func (f *Frame) Bytes() []byte {
 }
 
 func NewTranscoderFile(contentDirectory string, frameRate uint32) *TranscoderFiles {
-	fBytes, _ := ReadBinaryFiles(contentDirectory)
-	return &TranscoderFiles{fBytes, 0, true, 0, NewLayeredEncoder(), 0, 0, frameRate}
+	//fBytes, _ := ReadBinaryFiles(contentDirectory)
+	layer0Contents, layer0Sizes, err := readFiles(contentDirectory + "/layer_0")
+	if err != nil {
+		fmt.Println("Error reading layer_0:", err)
+	}
+
+	layer1Contents, layer1Sizes, err := readFiles(contentDirectory + "/layer_1")
+	if err != nil {
+		fmt.Println("Error reading layer_1:", err)
+	}
+
+	layer2Contents, layer2Sizes, err := readFiles(contentDirectory + "/layer_2")
+	if err != nil {
+		fmt.Println("Error reading layer_2:", err)
+	}
+	return &TranscoderFiles{0, true, 0, NewLayeredEncoder(), 0, 0, frameRate, layer0Contents, layer1Contents, layer2Contents, layer0Sizes, layer1Sizes, layer2Sizes}
 }
 
 func (t *TranscoderFiles) UpdateBitrate(bitrate uint32) {
@@ -64,18 +115,45 @@ func (t *TranscoderFiles) NextFrame() []byte {
 		time.Sleep(time.Duration(sleepTime) * time.Millisecond)
 	}
 	t.prevFrameTime = time.Now().UnixMilli()
-	return t.frames[t.fileCounter].Data
+	return nil
 }
 
 func (t *TranscoderFiles) EncodeFrame(data []byte) *Frame {
 
-	transcodedData := t.lEnc.EncodeMultiFrame(data)
-	if data == nil {
+	//transcodedData := t.lEnc.EncodeMultiFrame(data)
+	tempBitrate := (t.estimatedBitrate) / 8 / 30
+	fileData := make([]byte, 0)
+	if tempBitrate >= uint32(t.l0Size[t.frameCounter]) {
+		tempBitrate -= uint32(t.l0Size[t.frameCounter])
+		fileData = append(fileData, t.l0[t.frameCounter]...)
+		if tempBitrate >= uint32(t.l1Size[t.frameCounter]) {
+			tempBitrate -= uint32(t.l1Size[t.frameCounter])
+			fileData = append(fileData, t.l1[t.frameCounter]...)
+			if tempBitrate >= uint32(t.l2Size[t.frameCounter]) {
+				tempBitrate -= uint32(t.l2Size[t.frameCounter])
+				fileData = append(fileData, t.l2[t.frameCounter]...)
+			}
+		} else if tempBitrate >= uint32(t.l2Size[t.frameCounter]) {
+			tempBitrate -= uint32(t.l2Size[t.frameCounter])
+			fileData = append(fileData, t.l2[t.frameCounter]...)
+		}
+	} else if tempBitrate >= uint32(t.l1Size[t.frameCounter]) {
+		tempBitrate -= uint32(t.l1Size[t.frameCounter])
+		fileData = append(fileData, t.l1[t.frameCounter]...)
+		if tempBitrate >= uint32(t.l2Size[t.frameCounter]) {
+			tempBitrate -= uint32(t.l2Size[t.frameCounter])
+			fileData = append(fileData, t.l2[t.frameCounter]...)
+		}
+	} else if tempBitrate >= uint32(t.l2Size[t.frameCounter]) {
+		tempBitrate -= uint32(t.l2Size[t.frameCounter])
+		fileData = append(fileData, t.l2[t.frameCounter]...)
+	}
+	if uint32(len(fileData)) == 0 {
 		return nil
 	}
-	rFrame := Frame{0, uint32(len(transcodedData)), t.frameCounter, transcodedData}
+	rFrame := Frame{0, uint32(len(fileData)), t.frameCounter, fileData}
 	t.frameCounter = (t.frameCounter + 1)
-	t.fileCounter = (t.fileCounter + 1) % uint32(len(t.frames))
+	t.fileCounter = (t.fileCounter + 1) % uint32(len(t.l0))
 	return &rFrame
 }
 

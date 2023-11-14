@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -272,6 +274,12 @@ func wsHandlerMessageCbFunc(wsPacket WebsocketPacket) {
 		candidate := wsPacket.Message
 		if candidateErr := peerConnections[wsPacket.ClientID].AddICECandidate(candidate); candidateErr != nil {
 			panic(candidateErr)
+		}
+	case 10: //panzoom
+		bufBinary := bytes.NewBuffer([]byte(wsPacket.Message))
+		var pz PanZoom
+		if err := binary.Read(bufBinary, binary.LittleEndian, &pz); err == nil {
+			peerConnections[wsPacket.ClientID].SetPanZoom(pz)
 		}
 	default:
 		println(fmt.Sprintf("Received non-compliant message type %d", wsPacket.MessageType))

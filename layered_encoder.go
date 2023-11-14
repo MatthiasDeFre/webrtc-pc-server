@@ -40,14 +40,15 @@ type DstAndFrameID struct {
 	Dst     float32
 	FrameID uint32
 }
-type PanZoom struct {
+
+/*type PanZoom struct {
 	XPos  float32
 	YPos  float32
 	ZPos  float32
 	Yaw   float32
 	Pitch float32
 	Roll  float32
-}
+}*/
 
 func NewLayeredEncoder() *LayeredEncoder {
 	return &LayeredEncoder{}

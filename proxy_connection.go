@@ -136,9 +136,6 @@ func (pc *ProxyConnection) StartListening() {
 func (pc *ProxyConnection) SendFramePacket(b []byte, offset uint32) {
 	pc.sendPacket(b, offset, FramePacketType)
 }
-func (pc *ProxyConnection) SendControlPacket(b []byte) {
-	pc.sendPacket(b, 0, ControlPacketType)
-}
 
 func (pc *ProxyConnection) NextFrame() []byte {
 	isNextFrameReady := false

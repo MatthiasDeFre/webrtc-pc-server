@@ -16,6 +16,16 @@ import (
 	"github.com/pion/webrtc/v3"
 )
 
+type PanZoom struct {
+	XPos float32
+	YPos float32
+	ZPos float32
+
+	XRot float32
+	YRot float32
+	ZRot float32
+}
+
 type SendMessageCallback func(WebsocketPacket)
 
 type PeerConnectionFrame struct {
@@ -48,6 +58,9 @@ type PeerConnection struct {
 	frames                 map[uint32]*PeerConnectionFrame
 	completedFramesChannel *RingChannel
 	isReady                bool
+
+	panZoomMux     sync.Mutex
+	currentPanZoom PanZoom
 }
 
 // TODO add offer parameter?
@@ -235,4 +248,16 @@ func (pc *PeerConnection) OnTrackCb(track *webrtc.TrackRemote, receiver *webrtc.
 		}
 	}
 
+}
+
+func (pc *PeerConnection) GetPanZoom() PanZoom {
+	pc.panZoomMux.Lock()
+	defer pc.panZoomMux.Unlock()
+	return pc.currentPanZoom
+}
+
+func (pc *PeerConnection) SetPanZoom(pz PanZoom) {
+	pc.panZoomMux.Lock()
+	defer pc.panZoomMux.Unlock()
+	pc.currentPanZoom = pz
 }
