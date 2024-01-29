@@ -21,6 +21,8 @@ Following command line parameters can be used to change the behaviour of the app
 | -s            | Signaling IP       | IP on which the signaling server will be created                         | 127.0.0.1:5678 |
 | -m            | Result Path        | The path to which metrics are saved (folder + file without extension)    | results/exp_1  |
 
+To test the application you can use the following test content: [900 frame test sequence](https://drive.google.com/file/d/1yYDy3GVNkUxuNm5Qfs_-1BTZ6MbLrm7Y/view?usp=sharing)
+
 # Roadmap
 * Add support for many-to-many communication
 * Add support for tile-based / part of object adaptation
