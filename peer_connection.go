@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/pion/interceptor/pkg/cc"
@@ -61,6 +62,9 @@ type PeerConnection struct {
 
 	panZoomMux     sync.Mutex
 	currentPanZoom PanZoom
+
+	frameResultWriter FrameResultWriter
+	currentFrameNr    uint64
 }
 
 // TODO add offer parameter?
@@ -74,6 +78,8 @@ func NewPeerConnection(clientID uint64, websocketConnection *websocket.Conn, wsC
 		pendingCandidates:      make([]*webrtc.ICECandidate, 0),
 		frames:                 make(map[uint32]*PeerConnectionFrame),
 		completedFramesChannel: NewRingChannel(100),
+		frameResultWriter:      *NewFrameResultWriter(strconv.Itoa(int(clientID)), 5),
+		currentFrameNr:         0,
 	}
 	pc.StartListeningWebsocket(wsCb)
 	return pc
@@ -250,6 +256,14 @@ func (pc *PeerConnection) OnTrackCb(track *webrtc.TrackRemote, receiver *webrtc.
 
 }
 
+func (pc *PeerConnection) GetBitrate() uint32 {
+	return uint32(pc.estimator.GetTargetBitrate())
+}
+
+func (pc *PeerConnection) GetFrameCounter() uint32 {
+	return uint32(pc.currentFrameNr)
+}
+
 func (pc *PeerConnection) GetPanZoom() PanZoom {
 	pc.panZoomMux.Lock()
 	defer pc.panZoomMux.Unlock()
@@ -260,4 +274,62 @@ func (pc *PeerConnection) SetPanZoom(pz PanZoom) {
 	pc.panZoomMux.Lock()
 	defer pc.panZoomMux.Unlock()
 	pc.currentPanZoom = pz
+}
+
+func (pc *PeerConnection) SendFrame(frame *Frame) {
+	if frame != nil {
+		pc.frameResultWriter.CreateRecord(uint32(pc.currentFrameNr), time.Now().UnixNano()/int64(time.Millisecond), true)
+		pc.frameResultWriter.SetEstimatedBitrate(uint32(pc.currentFrameNr), uint32(pc.estimator.GetTargetBitrate()))
+		pc.frameResultWriter.SetSizeInBytes(uint32(pc.currentFrameNr), frame.FrameLen, true)
+
+		pc.track.WriteFrame(frame)
+		if pc.currentFrameNr%100 == 0 {
+			println("MULTIFRAME", pc.currentFrameNr, pc.clientID, len(frame.Data))
+		}
+
+		pc.frameResultWriter.SetProcessingCompleteTimestamp(uint32(pc.currentFrameNr), time.Now().UnixNano()/int64(time.Millisecond), true)
+		pc.frameResultWriter.SaveRecord(uint32(pc.currentFrameNr), true)
+	}
+	pc.currentFrameNr++
+}
+
+func (pc *PeerConnection) EncodeFrame(l0 []byte, l1 []byte, l2 []byte) *Frame {
+
+	//transcodedData := t.lEnc.EncodeMultiFrame(data)
+	tempBitrate := (pc.estimator.GetTargetBitrate()) / 8 / 30
+	fileData := make([]byte, 0)
+
+	l0Size := len(l0)
+	l1Size := len(l1)
+	l2Size := len(l2)
+	if tempBitrate >= l0Size {
+		tempBitrate -= l0Size
+		fileData = append(fileData, l0...)
+		if tempBitrate >= l1Size {
+			tempBitrate -= l1Size
+			fileData = append(fileData, l1...)
+			if tempBitrate >= l2Size {
+				tempBitrate -= l2Size
+				fileData = append(fileData, l2...)
+			}
+		} else if tempBitrate >= l2Size {
+			tempBitrate -= l2Size
+			fileData = append(fileData, l2...)
+		}
+	} else if tempBitrate >= l1Size {
+		tempBitrate -= l1Size
+		fileData = append(fileData, l1...)
+		if tempBitrate >= l2Size {
+			tempBitrate -= l2Size
+			fileData = append(fileData, l2...)
+		}
+	} else if tempBitrate >= l2Size {
+		tempBitrate -= l2Size
+		fileData = append(fileData, l2...)
+	}
+	if uint32(len(fileData)) == 0 {
+		return nil
+	}
+	rFrame := Frame{0, uint32(len(fileData)), uint32(pc.currentFrameNr), fileData}
+	return &rFrame
 }

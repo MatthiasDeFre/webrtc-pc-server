@@ -118,7 +118,7 @@ func (fs *FrameResultWriter) SaveRecord(frameNr uint32, isSender bool) {
 			if frameNr%fs.saveInterval == 0 {
 				fs.sendFramesFile.WriteString(fs.getRecord(fr))
 			}
-			delete(frameResultwriter.sendFrames, frameNr)
+			delete(fs.sendFrames, frameNr)
 		} else {
 			//println("SaveRecord unknown frame")
 		}
@@ -127,7 +127,7 @@ func (fs *FrameResultWriter) SaveRecord(frameNr uint32, isSender bool) {
 			if frameNr%fs.saveInterval == 0 {
 				fs.receivedFramesFile.WriteString(fs.getRecord(fr))
 			}
-			delete(frameResultwriter.receivedFrames, frameNr)
+			delete(fs.receivedFrames, frameNr)
 		} else {
 			//println("SaveRecord unknown frame")
 		}

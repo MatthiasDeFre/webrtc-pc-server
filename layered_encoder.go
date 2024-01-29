@@ -64,7 +64,7 @@ func (lhs FrameCategory) Compare(other queue.Item) int {
 	return 1
 }
 
-func (l *LayeredEncoder) EncodeMultiFrame(frame []byte) []byte {
+func (l *LayeredEncoder) EncodeMultiFrame(frame []byte, bitrate uint32) []byte {
 	//
 	var offsets []uint32
 	//var distanceToUser []float32
@@ -111,7 +111,6 @@ func (l *LayeredEncoder) EncodeMultiFrame(frame []byte) []byte {
 	dst := math.Sqrt(math.Pow(float64(pz.XPos-mx), 2) + math.Pow(float64(pz.YPos-my), 2) + math.Pow(float64(pz.ZPos-mz), 2))
 	dstID := uint8(dst / 50)
 	distanceIDs = append(distanceIDs, dstID)
-
 	// Frame is out of range
 	if dstID > 3 {
 		return nil
@@ -145,7 +144,7 @@ func (l *LayeredEncoder) EncodeMultiFrame(frame []byte) []byte {
 		}
 	}
 
-	tempBitrate := int(l.Bitrate / 8 / 30)
+	tempBitrate := int(bitrate / 8 / 30)
 	// Check if current category
 	foundCat := -1
 	foundCombo := -1

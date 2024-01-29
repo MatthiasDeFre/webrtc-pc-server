@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"net"
-	"os"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -34,7 +33,8 @@ var proxyConn *ProxyConnection
 var peerConnections map[uint64]*PeerConnection
 var api *webrtc.API
 var nClients int
-var frameResultwriter *FrameResultWriter
+
+// var frameResultwriter *FrameResultWriter
 var virtualWallFilterIp string
 
 func main() {
@@ -42,17 +42,18 @@ func main() {
 	proxyPort := flag.String("p", ":0", "Use as a proxy with specified port")
 	contentDirectory := flag.String("d", "content_jpg", "Content directory")
 	contentFrameRate := flag.Int("f", 30, "Frame rate that is used when using files instead of proxy")
-	signalingIP := flag.String("s", "127.0.0.1:5678", "Signaling server IP")
-	numberOfClients := flag.Int("c", 1, "Number of clients")
-	resultDirectory := flag.String("m", "", "Result directory")
+	signalingIP := flag.String("s", "0.0.0.0:5678", "Signaling server IP")
+	numberOfClients := flag.Int("c", -1, "Number of clients")
+	//resultDirectory := flag.String("m", "", "Result directory")
+	isIndi := flag.Bool("i", false, "Use Individual Encoding")
 	flag.Parse()
-	frameResultwriter = NewFrameResultWriter(*resultDirectory, 5)
-	fileCont, _ := os.OpenFile(*resultDirectory+"_cont.csv", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	fileCont.WriteString("time;estimated_bitrate;loss_rate;delay_rate;loss\n")
+	//frameResultwriter = NewFrameResultWriter(*resultDirectory, 5)
+	//fileCont, _ := os.OpenFile(*resultDirectory+"_cont.csv", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	//fileCont.WriteString("time;estimated_bitrate;loss_rate;delay_rate;loss\n")
 	nClients = *numberOfClients
 	useProxy := false
 	if *proxyPort != ":0" {
-		proxyConn = NewProxyConnection()
+		proxyConn = NewProxyConnection(peerConnections, *isIndi)
 		fmt.Println(*proxyPort)
 		proxyConn.SetupConnection(*proxyPort)
 		useProxy = true
@@ -127,39 +128,58 @@ func main() {
 
 	//select {}
 	for {
-		frameData := transcoder.NextFrame()
-		for _, pc := range peerConnections {
-			// Get frame from proxy = channel (maybe ring channel)
-			if pc.isReady {
-				//transcoder.UpdateBitrate(uint32(75_000_000))
-				if transcoder.GetFrameCounter()%5 == 0 {
-					vLossRate, _ := pc.estimator.GetStats()["lossTargetBitrate"]
-					vDelayRate, _ := pc.estimator.GetStats()["delayTargetBitrate"]
-					vLoss, _ := pc.estimator.GetStats()["averageLoss"]
-					timestamp := time.Now().UnixNano() / int64(time.Millisecond)
-					data := fmt.Sprintf("%d;%d;%d;%d;%.2f\n", timestamp, uint32(pc.estimator.GetTargetBitrate()), vLossRate, vDelayRate, vLoss)
-					fileCont.WriteString(data)
+		allReady := false
+		if nClients > -1 {
+			if clientCounter == uint64(nClients) {
+				tempReady := true
+				for _, pc := range peerConnections {
+					tempReady = tempReady && pc.isReady
 				}
-				transcoder.UpdateBitrate(uint32(pc.estimator.GetTargetBitrate()))
-				if frame := transcoder.EncodeFrame(frameData); frame != nil {
-					frameResultwriter.CreateRecord(transcoder.GetFrameCounter(), time.Now().UnixNano()/int64(time.Millisecond), true)
-					frameResultwriter.SetEstimatedBitrate(transcoder.GetFrameCounter(), uint32(pc.estimator.GetTargetBitrate()))
-					frameResultwriter.SetSizeInBytes(transcoder.GetFrameCounter(), uint32(len(frameData)), true)
+				allReady = tempReady
+			}
+		} else {
+			allReady = true
+		}
+		if allReady {
+			frame := transcoder.NextFrame()
+			for _, pc := range peerConnections {
+				// Get frame from proxy = channel (maybe ring channel)
+				if pc.isReady {
+					go pc.SendFrame(transcoder.EncodeFrame(frame, pc.GetFrameCounter(), pc.GetBitrate()))
 
-					pc.track.WriteFrame(frame)
-					if pc.track.currentFrame%100 == 0 {
-						println("MULTIFRAME", pc.track.currentFrame, pc.clientID, len(frame.Data))
+					//transcoder.UpdateBitrate(uint32(75_000_000))
+					/*if transcoder.GetFrameCounter()%5 == 0 {
+						vLossRate, _ := pc.estimator.GetStats()["lossTargetBitrate"]
+						vDelayRate, _ := pc.estimator.GetStats()["delayTargetBitrate"]
+						vLoss, _ := pc.estimator.GetStats()["averageLoss"]
+						timestamp := time.Now().UnixNano() / int64(time.Millisecond)
+						data := fmt.Sprintf("%d;%d;%d;%d;%.2f\n", timestamp, uint32(pc.estimator.GetTargetBitrate()), vLossRate, vDelayRate, vLoss)
+						fileCont.WriteString(data)
 					}
+					transcoder.UpdateBitrate(uint32(pc.estimator.GetTargetBitrate()))
+					if frame := transcoder.EncodeFrame(frameData); frame != nil {
+						frameResultwriter.CreateRecord(transcoder.GetFrameCounter(), time.Now().UnixNano()/int64(time.Millisecond), true)
+						frameResultwriter.SetEstimatedBitrate(transcoder.GetFrameCounter(), uint32(pc.estimator.GetTargetBitrate()))
+						frameResultwriter.SetSizeInBytes(transcoder.GetFrameCounter(), frame.FrameLen, true)
 
-					frameResultwriter.SetProcessingCompleteTimestamp(transcoder.GetFrameCounter(), time.Now().UnixNano()/int64(time.Millisecond), true)
-					frameResultwriter.SaveRecord(transcoder.GetFrameCounter(), true)
+						pc.track.WriteFrame(frame)
+						if pc.track.currentFrame%100 == 0 {
+							println("MULTIFRAME", pc.track.currentFrame, pc.clientID, len(frame.Data))
+						}
+
+						frameResultwriter.SetProcessingCompleteTimestamp(transcoder.GetFrameCounter(), time.Now().UnixNano()/int64(time.Millisecond), true)
+						frameResultwriter.SaveRecord(transcoder.GetFrameCounter(), true)
+					}*/
+
 				}
 			}
+			transcoder.IncrementFrameCounter()
 		}
-		if transcoder.GetFrameCounter()%100 == 0 {
-			println("FRAME", transcoder.GetFrameCounter(), "send to all clients")
 
-		}
+		//if transcoder.GetFrameCounter()%100 == 0 {
+		//	println("FRAME", transcoder.GetFrameCounter(), "send to all clients")
+		//
+		//}
 
 		/*if transcoder.GetFrameCounter() == 99 {
 			println("FRAME", transcoder.GetFrameCounter(), "send to all clients")

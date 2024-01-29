@@ -36,14 +36,16 @@ type ProxyConnection struct {
 	incomplete_frames map[uint32]RemoteFrame
 	complete_frames   []RemoteFrame
 	frameCounter      uint32
+	peerConnections   map[uint64]*PeerConnection
+	indi_mode         bool
 }
 
-func NewProxyConnection() *ProxyConnection {
-	return &ProxyConnection{nil, nil, sync.RWMutex{}, make(map[uint32]RemoteFrame), make([]RemoteFrame, 0), 0}
+func NewProxyConnection(peerConnections map[uint64]*PeerConnection, indi_mode bool) *ProxyConnection {
+	return &ProxyConnection{nil, nil, sync.RWMutex{}, make(map[uint32]RemoteFrame), make([]RemoteFrame, 0), 0, peerConnections, indi_mode}
 }
 
 func (pc *ProxyConnection) sendPacket(b []byte, offset uint32, packet_type uint32) {
-	buffProxy := make([]byte, 1300)
+	buffProxy := make([]byte, 1500)
 	binary.LittleEndian.PutUint32(buffProxy[0:], packet_type)
 	copy(buffProxy[4:], b[offset:])
 	_, err := pc.conn.WriteToUDP(buffProxy, pc.addr)
@@ -96,45 +98,77 @@ func (pc *ProxyConnection) StartListening() {
 		for {
 			buffer := make([]byte, 1500)
 			_, _, _ = pc.conn.ReadFromUDP(buffer)
+			var packetType uint32
+			err := binary.Read(bytes.NewReader(buffer[:4]), binary.BigEndian, &packetType)
 			bufBinary := bytes.NewBuffer(buffer[4:20])
 			// Read the fields from the buffer into a struct
-			var p RemoteInputPacketHeader
-			err := binary.Read(bufBinary, binary.LittleEndian, &p)
-			if err != nil {
-				fmt.Println("Error:", err)
-				return
-			}
-			pc.m.Lock()
-			_, exists := pc.incomplete_frames[p.Framenr]
-			if !exists {
-				r := RemoteFrame{
-					0,
-					p.Framelen,
-					make([]byte, p.Framelen),
+			if packetType == 2 && pc.indi_mode == false {
+				var p RemoteInputPacketHeader
+				err = binary.Read(bufBinary, binary.LittleEndian, &p)
+				if err != nil {
+					fmt.Println("Error:", err)
+					return
 				}
-				pc.incomplete_frames[p.Framenr] = r
-			}
-			value := pc.incomplete_frames[p.Framenr]
-
-			copy(value.frameData[p.Frameoffset:p.Frameoffset+p.Packetlen], buffer[20:20+p.Packetlen])
-			value.currentLen = value.currentLen + p.Packetlen
-			pc.incomplete_frames[p.Framenr] = value
-
-			if value.currentLen == value.frameLen {
-				if p.Framenr%5 == 0 {
-					println("REMOTE FRAME ", p.Framenr, " COMPLETE")
+				pc.m.Lock()
+				_, exists := pc.incomplete_frames[p.Framenr]
+				if !exists {
+					r := RemoteFrame{
+						0,
+						p.Framelen,
+						make([]byte, p.Framelen),
+					}
+					pc.incomplete_frames[p.Framenr] = r
 				}
-				pc.complete_frames = append(pc.complete_frames, value)
-				delete(pc.incomplete_frames, p.Framenr)
+				value := pc.incomplete_frames[p.Framenr]
+
+				copy(value.frameData[p.Frameoffset:p.Frameoffset+p.Packetlen], buffer[20:20+p.Packetlen])
+				value.currentLen = value.currentLen + p.Packetlen
+				pc.incomplete_frames[p.Framenr] = value
+
+				if value.currentLen == value.frameLen {
+					if p.Framenr%5 == 0 {
+						println("REMOTE FRAME ", p.Framenr, " COMPLETE")
+					}
+					pc.complete_frames = append(pc.complete_frames, value)
+					delete(pc.incomplete_frames, p.Framenr)
+				}
+				//println(p.Frameoffset, p.Framenr, value.currentLen, p.Framelen)
+				pc.m.Unlock()
+			} else if packetType == 2 {
+
+			} else {
+				pc.SendBitrates()
 			}
-			//println(p.Frameoffset, p.Framenr, value.currentLen, p.Framelen)
-			pc.m.Unlock()
 
 		}
 	}()
 }
 func (pc *ProxyConnection) SendFramePacket(b []byte, offset uint32) {
 	pc.sendPacket(b, offset, FramePacketType)
+}
+
+func (pc *ProxyConnection) SendBitrates() bool {
+	nClients := uint64(len(pc.peerConnections))
+	buffer := new(bytes.Buffer)
+	err := binary.Write(buffer, binary.LittleEndian, nClients)
+	if err != nil {
+		return false
+	}
+	for key, peerConn := range pc.peerConnections {
+		// Write the key to the buffer
+		err := binary.Write(buffer, binary.LittleEndian, key)
+		if err != nil {
+			return false
+		}
+
+		// Write the PeerConnection.GetBitrate() to the buffer
+		err = binary.Write(buffer, binary.LittleEndian, peerConn.GetBitrate())
+		if err != nil {
+			return false
+		}
+	}
+	pc.sendPacket(buffer.Bytes(), 0, 1)
+	return true
 }
 
 func (pc *ProxyConnection) NextFrame() []byte {

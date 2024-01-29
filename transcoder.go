@@ -20,7 +20,7 @@ type Frame struct {
 type Transcoder interface {
 	UpdateBitrate(bitrate uint32)
 	UpdateProjection()
-	EncodeFrame(data []byte) *Frame
+	EncodeFrame(data []byte, framecounter uint32, bitrate uint32) *Frame
 	IsReady() bool
 	GetEstimatedBitrate() uint32
 	GetFrameCounter() uint32
@@ -63,13 +63,7 @@ type TranscoderFiles struct {
 	prevFrameTime    int64
 	frameRate        uint32
 
-	l0 [][]byte
-	l1 [][]byte
-	l2 [][]byte
-
-	l0Size []int64
-	l1Size []int64
-	l2Size []int64
+	frames [][]byte
 }
 
 func (f *Frame) Bytes() []byte {
@@ -83,26 +77,17 @@ func (f *Frame) Bytes() []byte {
 
 func NewTranscoderFile(contentDirectory string, frameRate uint32) *TranscoderFiles {
 	//fBytes, _ := ReadBinaryFiles(contentDirectory)
-	layer0Contents, layer0Sizes, err := readFiles(contentDirectory + "/layer_0")
+	frames, _, err := readFiles(contentDirectory)
 	if err != nil {
 		fmt.Println("Error reading layer_0:", err)
 	}
 
-	layer1Contents, layer1Sizes, err := readFiles(contentDirectory + "/layer_1")
-	if err != nil {
-		fmt.Println("Error reading layer_1:", err)
-	}
-
-	layer2Contents, layer2Sizes, err := readFiles(contentDirectory + "/layer_2")
-	if err != nil {
-		fmt.Println("Error reading layer_2:", err)
-	}
-	return &TranscoderFiles{0, true, 0, NewLayeredEncoder(), 0, 0, frameRate, layer0Contents, layer1Contents, layer2Contents, layer0Sizes, layer1Sizes, layer2Sizes}
+	return &TranscoderFiles{0, true, 0, NewLayeredEncoder(), 0, 0, frameRate, frames}
 }
 
 func (t *TranscoderFiles) UpdateBitrate(bitrate uint32) {
-	t.estimatedBitrate = bitrate
-	t.lEnc.Bitrate = bitrate
+	t.estimatedBitrate = uint32(float64(bitrate) * 0.9)
+	t.lEnc.Bitrate = uint32(float64(bitrate) * 0.9)
 }
 
 func (t *TranscoderFiles) UpdateProjection() {
@@ -115,45 +100,18 @@ func (t *TranscoderFiles) NextFrame() []byte {
 		time.Sleep(time.Duration(sleepTime) * time.Millisecond)
 	}
 	t.prevFrameTime = time.Now().UnixMilli()
-	return nil
+	return t.frames[t.fileCounter]
 }
 
-func (t *TranscoderFiles) EncodeFrame(data []byte) *Frame {
+func (t *TranscoderFiles) EncodeFrame(data []byte, framecounter uint32, bitrate uint32) *Frame {
 
 	//transcodedData := t.lEnc.EncodeMultiFrame(data)
-	tempBitrate := (t.estimatedBitrate) / 8 / 30
-	fileData := make([]byte, 0)
-	if tempBitrate >= uint32(t.l0Size[t.fileCounter]) {
-		tempBitrate -= uint32(t.l0Size[t.fileCounter])
-		fileData = append(fileData, t.l0[t.fileCounter]...)
-		if tempBitrate >= uint32(t.l1Size[t.fileCounter]) {
-			tempBitrate -= uint32(t.l1Size[t.fileCounter])
-			fileData = append(fileData, t.l1[t.fileCounter]...)
-			if tempBitrate >= uint32(t.l2Size[t.fileCounter]) {
-				tempBitrate -= uint32(t.l2Size[t.fileCounter])
-				fileData = append(fileData, t.l2[t.fileCounter]...)
-			}
-		} else if tempBitrate >= uint32(t.l2Size[t.fileCounter]) {
-			tempBitrate -= uint32(t.l2Size[t.fileCounter])
-			fileData = append(fileData, t.l2[t.fileCounter]...)
-		}
-	} else if tempBitrate >= uint32(t.l1Size[t.fileCounter]) {
-		tempBitrate -= uint32(t.l1Size[t.fileCounter])
-		fileData = append(fileData, t.l1[t.fileCounter]...)
-		if tempBitrate >= uint32(t.l2Size[t.fileCounter]) {
-			tempBitrate -= uint32(t.l2Size[t.fileCounter])
-			fileData = append(fileData, t.l2[t.fileCounter]...)
-		}
-	} else if tempBitrate >= uint32(t.l2Size[t.fileCounter]) {
-		tempBitrate -= uint32(t.l2Size[t.fileCounter])
-		fileData = append(fileData, t.l2[t.fileCounter]...)
-	}
-	if uint32(len(fileData)) == 0 {
+
+	transcodedData := t.lEnc.EncodeMultiFrame(data, bitrate)
+	if data == nil {
 		return nil
 	}
-	rFrame := Frame{0, uint32(len(fileData)), t.frameCounter, fileData}
-	t.frameCounter = (t.frameCounter + 1)
-	t.fileCounter = (t.fileCounter + 1) % uint32(len(t.l0))
+	rFrame := Frame{0, uint32(len(transcodedData)), framecounter, transcodedData}
 	return &rFrame
 }
 
@@ -170,6 +128,7 @@ func (t *TranscoderFiles) GetFrameCounter() uint32 {
 }
 func (t *TranscoderFiles) IncrementFrameCounter() {
 	t.frameCounter++
+	t.fileCounter = (t.fileCounter + 1) % uint32(len(t.frames))
 }
 
 type TranscoderRemote struct {
@@ -185,8 +144,8 @@ func NewTranscoderRemote(proxy_con *ProxyConnection) *TranscoderRemote {
 }
 
 func (t *TranscoderRemote) UpdateBitrate(bitrate uint32) {
-	t.estimatedBitrate = bitrate
-	t.lEnc.Bitrate = bitrate
+	t.estimatedBitrate = uint32(float64(bitrate) * 0.9)
+	t.lEnc.Bitrate = uint32(float64(bitrate) * 0.9)
 }
 
 func (t *TranscoderRemote) UpdateProjection() {
@@ -196,8 +155,8 @@ func (t *TranscoderRemote) NextFrame() []byte {
 	return proxyConn.NextFrame()
 }
 
-func (t *TranscoderRemote) EncodeFrame(data []byte) *Frame {
-	transcodedData := t.lEnc.EncodeMultiFrame(data)
+func (t *TranscoderRemote) EncodeFrame(data []byte, framecounter uint32, bitrate uint32) *Frame {
+	transcodedData := t.lEnc.EncodeMultiFrame(data, bitrate)
 	if data == nil {
 		return nil
 	}
@@ -244,7 +203,7 @@ func (t *TranscoderDummy) UpdateProjection() {
 	// Do nothing
 }
 
-func (t *TranscoderDummy) EncodeFrame(data []byte) *Frame {
+func (t *TranscoderDummy) EncodeFrame(data []byte, framecounter uint32, bitrate uint32) *Frame {
 
 	if t.isDummy {
 		return nil
