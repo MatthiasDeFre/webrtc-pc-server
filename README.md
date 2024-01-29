@@ -5,8 +5,9 @@ This repository contains the sending WebRTC server of the real-time point cloud 
 Building the project requires the use of Golang. To ensure comptability Golang version 1.21+ should be used. However, older version might also work but have not yet been tested. The project itself has been tested on both Windows and Ubuntu 20.04.
 
 
-# Dependencies
-TODO
+# Dependencies (will be installed by Golang)
+* [Pion (WebRTC)](https://github.com/pion/webrtc)
+* [Gorilla (websockets)](https://github.com/gorilla/websocket)
 
 # Usage
 Following command line parameters can be used to change the behaviour of the application:
@@ -21,3 +22,5 @@ Following command line parameters can be used to change the behaviour of the app
 | -m            | Result Path        | The path to which metrics are saved (folder + file without extension)    | results/exp_1  |
 
 # Roadmap
+* Add support for many-to-many communication
+* Add support for tile-based / part of object adaptation
