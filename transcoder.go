@@ -24,8 +24,7 @@ type Transcoder interface {
 	IsReady() bool
 	GetEstimatedBitrate() uint32
 	GetFrameCounter() uint32
-	IncrementFrameCounter()
-	NextFrame() []byte
+	NextFrame() (uint32, []byte)
 }
 
 func readFiles(directory string) ([][]byte, []int64, error) {
@@ -94,13 +93,16 @@ func (t *TranscoderFiles) UpdateProjection() {
 	// Do nothing
 }
 
-func (t *TranscoderFiles) NextFrame() []byte {
+func (t *TranscoderFiles) NextFrame() (uint32, []byte) {
 	sleepTime := int64(1000/t.frameRate) - (time.Now().UnixMilli() - t.prevFrameTime)
 	if sleepTime > 0 {
 		time.Sleep(time.Duration(sleepTime) * time.Millisecond)
 	}
 	t.prevFrameTime = time.Now().UnixMilli()
-	return t.frames[t.fileCounter]
+	t.frameCounter++
+	currentCounter := t.fileCounter
+	t.fileCounter = (t.fileCounter + 1) % uint32(len(t.frames))
+	return t.frameCounter, t.frames[currentCounter]
 }
 
 func (t *TranscoderFiles) EncodeFrame(data []byte, framecounter uint32, bitrate uint32) *Frame {
@@ -126,10 +128,6 @@ func (t *TranscoderFiles) GetEstimatedBitrate() uint32 {
 func (t *TranscoderFiles) GetFrameCounter() uint32 {
 	return t.frameCounter
 }
-func (t *TranscoderFiles) IncrementFrameCounter() {
-	t.frameCounter++
-	t.fileCounter = (t.fileCounter + 1) % uint32(len(t.frames))
-}
 
 type TranscoderRemote struct {
 	proxyConn        *ProxyConnection
@@ -151,8 +149,8 @@ func (t *TranscoderRemote) UpdateBitrate(bitrate uint32) {
 func (t *TranscoderRemote) UpdateProjection() {
 	// Do nothing
 }
-func (t *TranscoderRemote) NextFrame() []byte {
-	return proxyConn.NextFrame()
+func (t *TranscoderRemote) NextFrame() (uint32, []byte) {
+	return proxyConn.NextFrame(0)
 }
 
 func (t *TranscoderRemote) EncodeFrame(data []byte, framecounter uint32, bitrate uint32) *Frame {
@@ -160,7 +158,7 @@ func (t *TranscoderRemote) EncodeFrame(data []byte, framecounter uint32, bitrate
 	if data == nil {
 		return nil
 	}
-	rFrame := Frame{0, uint32(len(transcodedData)), t.frameCounter, transcodedData}
+	rFrame := Frame{0, uint32(len(transcodedData)), framecounter, transcodedData}
 	return &rFrame
 }
 
@@ -173,8 +171,48 @@ func (t *TranscoderRemote) GetEstimatedBitrate() uint32 {
 func (t *TranscoderRemote) GetFrameCounter() uint32 {
 	return t.frameCounter
 }
-func (t *TranscoderRemote) IncrementFrameCounter() {
-	t.frameCounter++
+
+// INDI TRANSCODER
+
+type TranscoderRemoteIndi struct {
+	proxyConn        *ProxyConnection
+	frameCounter     uint32
+	isReady          bool
+	estimatedBitrate uint32
+	clientID         uint32
+}
+
+func NewTranscoderRemoteIndi(proxy_con *ProxyConnection, clientID uint32) *TranscoderRemoteIndi {
+	return &TranscoderRemoteIndi{proxy_con, 0, true, 0, clientID}
+}
+
+func (t *TranscoderRemoteIndi) UpdateBitrate(bitrate uint32) {
+	t.estimatedBitrate = uint32(float64(bitrate) * 0.9)
+}
+
+func (t *TranscoderRemoteIndi) UpdateProjection() {
+	// Do nothing
+}
+func (t *TranscoderRemoteIndi) NextFrame() (uint32, []byte) {
+	return proxyConn.NextFrame(t.clientID)
+}
+
+func (t *TranscoderRemoteIndi) EncodeFrame(data []byte, framecounter uint32, bitrate uint32) *Frame {
+	if data == nil {
+		return nil
+	}
+	rFrame := Frame{t.clientID, uint32(len(data)), framecounter, data}
+	return &rFrame
+}
+
+func (t *TranscoderRemoteIndi) IsReady() bool {
+	return t.isReady
+}
+func (t *TranscoderRemoteIndi) GetEstimatedBitrate() uint32 {
+	return t.estimatedBitrate
+}
+func (t *TranscoderRemoteIndi) GetFrameCounter() uint32 {
+	return t.frameCounter
 }
 
 type TranscoderDummy struct {
@@ -210,7 +248,7 @@ func (t *TranscoderDummy) EncodeFrame(data []byte, framecounter uint32, bitrate 
 	}
 	//	//println(100000 / 8 / t.n_tiles)
 	transcodedData := make([]byte, uint32(float64(t.bitrate/8/30)))
-	rFrame := Frame{0, uint32(len(transcodedData)), t.frameCounter, transcodedData}
+	rFrame := Frame{0, uint32(len(transcodedData)), framecounter, transcodedData}
 	t.frameCounter++
 	return &rFrame
 }
@@ -224,9 +262,6 @@ func (t *TranscoderDummy) GetEstimatedBitrate() uint32 {
 func (t *TranscoderDummy) GetFrameCounter() uint32 {
 	return t.frameCounter
 }
-func (t *TranscoderDummy) IncrementFrameCounter() {
-	t.frameCounter++
-}
-func (t *TranscoderDummy) NextFrame() []byte {
-	return make([]byte, uint32(float64(t.bitrate/8/30)))
+func (t *TranscoderDummy) NextFrame() (uint32, []byte) {
+	return t.frameCounter, make([]byte, uint32(float64(t.bitrate/8/30)))
 }

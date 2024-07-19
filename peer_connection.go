@@ -13,7 +13,12 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/cc"
+	"github.com/pion/interceptor/pkg/gcc"
+	"github.com/pion/interceptor/pkg/nack"
+	"github.com/pion/interceptor/pkg/twcc"
+	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v3"
 )
 
@@ -28,6 +33,8 @@ type PanZoom struct {
 }
 
 type SendMessageCallback func(WebsocketPacket)
+type OnDisconnectedCb func(uint64)
+type OnConnectedCb func(uint64)
 
 type PeerConnectionFrame struct {
 	ClientID   uint64
@@ -48,13 +55,17 @@ func (pf *PeerConnectionFrame) IsComplete() bool {
 // TODO State variable per connection
 // TODO Frame queue per connection
 type PeerConnection struct {
-	websocketConnection *websocket.Conn
-	webrtcConnection    *webrtc.PeerConnection
-	clientID            uint64
-	candidatesMux       sync.Mutex
-	pendingCandidates   []*webrtc.ICECandidate
-	estimator           cc.BandwidthEstimator
-	track               *TrackLocalCloudRTP
+	websocketConnection     *websocket.Conn
+	wbMutex                 sync.Mutex
+	webrtcConnection        *webrtc.PeerConnection
+	clientID                uint64
+	candidatesMux           sync.Mutex
+	pendingCandidates       []*webrtc.ICECandidate
+	pendingCandidatesString []string
+	estimator               cc.BandwidthEstimator
+	track                   *TrackLocalCloudRTP
+	transcoder              Transcoder
+	isIndi                  bool
 
 	frames                 map[uint32]*PeerConnectionFrame
 	completedFramesChannel *RingChannel
@@ -65,26 +76,105 @@ type PeerConnection struct {
 
 	frameResultWriter FrameResultWriter
 	currentFrameNr    uint64
+
+	conCb OnConnectedCb
+	dscCb OnDisconnectedCb
 }
 
 // TODO add offer parameter?
-func NewPeerConnection(clientID uint64, websocketConnection *websocket.Conn, wsCb WebsocketCallback) *PeerConnection {
+func NewPeerConnection(clientID uint64, websocketConnection *websocket.Conn, wsCb WebsocketCallback, isIndi bool) *PeerConnection {
 	// TODO Make new webrtc connection
 	// TODO Error checking
 	pc := &PeerConnection{
-		websocketConnection:    websocketConnection,
-		clientID:               clientID,
-		candidatesMux:          sync.Mutex{},
-		pendingCandidates:      make([]*webrtc.ICECandidate, 0),
-		frames:                 make(map[uint32]*PeerConnectionFrame),
-		completedFramesChannel: NewRingChannel(100),
-		frameResultWriter:      *NewFrameResultWriter(strconv.Itoa(int(clientID)), 5),
-		currentFrameNr:         0,
+		websocketConnection:     websocketConnection,
+		wbMutex:                 sync.Mutex{},
+		clientID:                clientID,
+		candidatesMux:           sync.Mutex{},
+		pendingCandidates:       make([]*webrtc.ICECandidate, 0),
+		pendingCandidatesString: make([]string, 0),
+		frames:                  make(map[uint32]*PeerConnectionFrame),
+		completedFramesChannel:  NewRingChannel(100),
+		frameResultWriter:       *NewFrameResultWriter(strconv.Itoa(int(clientID)), 5),
+		currentFrameNr:          0,
+		isIndi:                  isIndi,
+	}
+	if isIndi {
+		pc.transcoder = NewTranscoderRemoteIndi(proxyConn, uint32(clientID))
 	}
 	pc.StartListeningWebsocket(wsCb)
 	return pc
 }
-func (pc *PeerConnection) Init(api *webrtc.API) {
+
+func (pc *PeerConnection) NewWebrtcAPI() *webrtc.API {
+	settingEngine := webrtc.SettingEngine{}
+	settingEngine.SetSCTPMaxReceiveBufferSize(16 * 1024 * 1024)
+
+	i := &interceptor.Registry{}
+	m := &webrtc.MediaEngine{}
+	if err := m.RegisterDefaultCodecs(); err != nil {
+		panic(err)
+	}
+
+	videoRTCPFeedback := []webrtc.RTCPFeedback{
+		{Type: "goog-remb", Parameter: ""},
+		{Type: "ccm", Parameter: "fir"},
+		{Type: "nack", Parameter: ""},
+		{Type: "nack", Parameter: "pli"},
+	}
+
+	codecCapability := webrtc.RTPCodecCapability{
+		MimeType:     "video/pcm",
+		ClockRate:    90000,
+		Channels:     0,
+		SDPFmtpLine:  "",
+		RTCPFeedback: videoRTCPFeedback,
+	}
+
+	if err := m.RegisterCodec(webrtc.RTPCodecParameters{
+		RTPCodecCapability: codecCapability,
+		PayloadType:        5,
+	}, webrtc.RTPCodecTypeVideo); err != nil {
+		panic(err)
+	}
+
+	m.RegisterFeedback(webrtc.RTCPFeedback{Type: "nack"}, webrtc.RTPCodecTypeVideo)
+	m.RegisterFeedback(webrtc.RTCPFeedback{Type: "nack", Parameter: "pli"}, webrtc.RTPCodecTypeVideo)
+	// Sender side
+	congestionController, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
+		return gcc.NewSendSideBWE(gcc.SendSideBWEMinBitrate(75_000*8), gcc.SendSideBWEInitialBitrate(75_000_000), gcc.SendSideBWEMaxBitrate(262_744_320))
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	congestionController.OnNewPeerConnection(func(id string, estimator cc.BandwidthEstimator) {
+		pc.SetEstimator(estimator)
+	})
+	m.RegisterFeedback(webrtc.RTCPFeedback{Type: webrtc.TypeRTCPFBTransportCC}, webrtc.RTPCodecTypeVideo)
+	if err := m.RegisterHeaderExtension(webrtc.RTPHeaderExtensionCapability{URI: sdp.TransportCCURI}, webrtc.RTPCodecTypeVideo); err != nil {
+		panic(err)
+	}
+	//webrtc.RegisterDefaultInterceptors()
+	responder, _ := nack.NewResponderInterceptor()
+	twccInt, _ := twcc.NewHeaderExtensionInterceptor()
+	generator, err := twcc.NewSenderInterceptor(twcc.SendInterval(10 * time.Millisecond))
+	if err != nil {
+		panic(err)
+	}
+
+	nackGenerator, _ := nack.NewGeneratorInterceptor()
+
+	i.Add(congestionController)
+	i.Add(responder)
+	i.Add(twccInt)
+	i.Add(generator)
+	i.Add(nackGenerator)
+
+	return webrtc.NewAPI(webrtc.WithSettingEngine(settingEngine), webrtc.WithInterceptorRegistry(i), webrtc.WithMediaEngine(m))
+}
+
+func (pc *PeerConnection) Init() {
+	api := pc.NewWebrtcAPI()
 	webrtcConnection, _ := api.NewPeerConnection(webrtc.Configuration{})
 	pc.webrtcConnection = webrtcConnection
 	// ------------------ Callbacks ------------------
@@ -112,14 +202,26 @@ func (pc *PeerConnection) Init(api *webrtc.API) {
 			}
 		}
 	}()
+	offer, err := pc.webrtcConnection.CreateOffer(nil)
+	if err != nil {
+
+	}
+
+	if err = pc.webrtcConnection.SetLocalDescription(offer); err != nil {
+
+	}
+
+	payload, err := json.Marshal(offer)
+
+	pc.SendWebsocketMessage(WebsocketPacket{0, 2, string(payload)})
 	// ------------------ Set Description ------------------
-	offer, err := webrtcConnection.CreateOffer(nil)
+	/*offer, err := webrtcConnection.CreateOffer(nil)
 	webrtcConnection.SetLocalDescription(offer)
 	payload, err := json.Marshal(offer)
 	if err != nil {
 		panic(err)
 	}
-	pc.SendWebsocketMessage(WebsocketPacket{uint64(pc.clientID), 2, string(payload)})
+	pc.SendWebsocketMessage(WebsocketPacket{uint64(pc.clientID), 2, string(payload)})*/
 	/*webrtcConnection.SetRemoteDescription(offer)
 	answer, err := webrtcConnection.CreateAnswer(nil)
 	if err != nil {
@@ -167,16 +269,26 @@ func (pc *PeerConnection) StartListeningWebsocket(wsCb WebsocketCallback) {
 			wsPacket := WebsocketPacket{uint64(pc.clientID), messageType, v[2]}
 			// TODO Potential clash => adding new client => currently reading from it
 			// Complete peer connection initilisation
-			wsCb(wsPacket)
+			wsCb(wsPacket, pc)
 		}
 	}()
 }
 func (pc *PeerConnection) SendWebsocketMessage(wsPacket WebsocketPacket) {
 	s := fmt.Sprintf("%d@%d@%s", wsPacket.ClientID, wsPacket.MessageType, wsPacket.Message)
+	pc.wbMutex.Lock()
+	defer pc.wbMutex.Unlock()
 	err := pc.websocketConnection.WriteMessage(websocket.TextMessage, []byte(s))
 	if err != nil {
 		panic(err)
 	}
+}
+
+// TODO Pass global wsHandler?
+func (pc *PeerConnection) SetOnConnectedCb(cb OnConnectedCb) {
+	pc.conCb = cb
+}
+func (pc *PeerConnection) SetOnDisconnectedCb(cb OnDisconnectedCb) {
+	pc.dscCb = cb
 }
 
 // TODO Pass global wsHandler?
@@ -204,6 +316,23 @@ func (pc *PeerConnection) OnConnectionStateChangeCb(s webrtc.PeerConnectionState
 		os.Exit(0)
 	} else if s == webrtc.PeerConnectionStateConnected {
 		pc.isReady = true
+		if pc.conCb != nil {
+			println("concb", pc.clientID)
+			pc.conCb(pc.clientID)
+		}
+		if pc.isIndi {
+			go func() {
+				for {
+					frameNr, frame := pc.transcoder.NextFrame()
+					pc.SendFrame(pc.transcoder.EncodeFrame(frame, frameNr, pc.GetBitrate()))
+				}
+			}()
+		}
+
+	} else if s == webrtc.PeerConnectionStateClosed {
+		if pc.dscCb != nil {
+			pc.dscCb(pc.clientID)
+		}
 	}
 }
 
@@ -270,6 +399,10 @@ func (pc *PeerConnection) GetPanZoom() PanZoom {
 	return pc.currentPanZoom
 }
 
+func (pc *PeerConnection) GetRemoteDescription() *webrtc.SessionDescription {
+	return pc.webrtcConnection.RemoteDescription()
+}
+
 func (pc *PeerConnection) SetPanZoom(pz PanZoom) {
 	pc.panZoomMux.Lock()
 	defer pc.panZoomMux.Unlock()
@@ -278,19 +411,19 @@ func (pc *PeerConnection) SetPanZoom(pz PanZoom) {
 
 func (pc *PeerConnection) SendFrame(frame *Frame) {
 	if frame != nil {
-		pc.frameResultWriter.CreateRecord(uint32(pc.currentFrameNr), time.Now().UnixNano()/int64(time.Millisecond), true)
-		pc.frameResultWriter.SetEstimatedBitrate(uint32(pc.currentFrameNr), uint32(pc.estimator.GetTargetBitrate()))
-		pc.frameResultWriter.SetSizeInBytes(uint32(pc.currentFrameNr), frame.FrameLen, true)
+		pc.frameResultWriter.CreateRecord(uint32(frame.FrameNr), time.Now().UnixNano()/int64(time.Millisecond), true)
+		pc.frameResultWriter.SetEstimatedBitrate(uint32(frame.FrameNr), uint32(pc.estimator.GetTargetBitrate()))
+		pc.frameResultWriter.SetSizeInBytes(uint32(frame.FrameNr), frame.FrameLen, true)
 
 		pc.track.WriteFrame(frame)
-		if pc.currentFrameNr%100 == 0 {
-			println("MULTIFRAME", pc.currentFrameNr, pc.clientID, len(frame.Data))
+		if frame.FrameNr%100 == 0 {
+			println("MULTIFRAME", frame.FrameNr, pc.clientID, len(frame.Data))
 		}
 
-		pc.frameResultWriter.SetProcessingCompleteTimestamp(uint32(pc.currentFrameNr), time.Now().UnixNano()/int64(time.Millisecond), true)
-		pc.frameResultWriter.SaveRecord(uint32(pc.currentFrameNr), true)
+		pc.frameResultWriter.SetProcessingCompleteTimestamp(uint32(frame.FrameNr), time.Now().UnixNano()/int64(time.Millisecond), true)
+		pc.frameResultWriter.SaveRecord(uint32(frame.FrameNr), true)
 	}
-	pc.currentFrameNr++
+	//pc.currentFrameNr++
 }
 
 func (pc *PeerConnection) EncodeFrame(l0 []byte, l1 []byte, l2 []byte) *Frame {

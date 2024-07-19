@@ -7,12 +7,13 @@ import (
 
 // AV1Payloader payloads AV1 packets
 type PointCloudPayloader struct {
-	frameCounter uint32
+	FrameCounter uint32
 }
 
 // Payload fragments a AV1 packet across one or more byte arrays
 // See AV1Packet for description of AV1 Payload Header
 func (p *PointCloudPayloader) Payload(mtu uint16, payload []byte) (payloads [][]byte) {
+	frameNr := p.FrameCounter
 	payloadDataOffset := uint32(0)
 	payloadLen := uint32(len(payload))
 	payloadRemaining := payloadLen
@@ -21,7 +22,7 @@ func (p *PointCloudPayloader) Payload(mtu uint16, payload []byte) (payloads [][]
 		if payloadRemaining < currentFragmentSize {
 			currentFragmentSize = payloadRemaining
 		}
-		p := NewFramePacket(p.frameCounter, payloadLen, currentFragmentSize, payloadDataOffset, payload)
+		p := NewFramePacket(frameNr, payloadLen, currentFragmentSize, payloadDataOffset, payload)
 		buf := new(bytes.Buffer)
 
 		if err := binary.Write(buf, binary.LittleEndian, p); err != nil {
@@ -31,10 +32,10 @@ func (p *PointCloudPayloader) Payload(mtu uint16, payload []byte) (payloads [][]
 		payloadDataOffset += currentFragmentSize
 		payloadRemaining -= currentFragmentSize
 	}
-	p.frameCounter++
+	//p.frameCounter++
 	return payloads
 }
 
 func NewPointCloudPayloader() *PointCloudPayloader {
-	return &PointCloudPayloader{0}
+	return &PointCloudPayloader{}
 }

@@ -13,7 +13,7 @@ type WebsocketPacket struct {
 	Message     string
 }
 
-type WebsocketCallback func(WebsocketPacket)
+type WebsocketCallback func(WebsocketPacket, *PeerConnection)
 type NewUserCallback func(*websocket.Conn)
 
 type WebsocketHandler struct {

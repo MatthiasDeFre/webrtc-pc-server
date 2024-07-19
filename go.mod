@@ -21,7 +21,7 @@ require (
 	github.com/pion/ice/v2 v2.3.2 // indirect
 	github.com/pion/logging v0.2.2 // indirect
 	github.com/pion/mdns v0.0.7 // indirect
-	github.com/pion/rtcp v1.2.10 // indirect
+	github.com/pion/rtcp v1.2.12 // indirect
 	github.com/pion/sctp v1.8.7 // indirect
 	github.com/pion/srtp/v2 v2.0.12 // indirect
 	github.com/pion/stun v0.4.0 // indirect

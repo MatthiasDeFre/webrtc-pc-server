@@ -13,6 +13,7 @@ type TrackLocalCloudRTP struct {
 	rtpTrack     *webrtc.TrackLocalStaticRTP
 	clockRate    float64
 	currentFrame uint32
+	pcPayloader  *PointCloudPayloader
 }
 
 // NewTrackLocalStaticSample returns a TrackLocalStaticSample
@@ -39,13 +40,13 @@ func (s *TrackLocalCloudRTP) Bind(t webrtc.TrackLocalContext) (webrtc.RTPCodecPa
 	if s.packetizer != nil {
 		return codec, nil
 	}
-
+	s.pcPayloader = NewPointCloudPayloader()
 	s.sequencer = rtp.NewRandomSequencer()
 	s.packetizer = rtp.NewPacketizer(
 		1200, // Not MTU but ok
 		0,    // Value is handled when writing
 		0,    // Value is handled when writing
-		NewPointCloudPayloader(),
+		s.pcPayloader,
 		s.sequencer,
 		codec.ClockRate,
 	)
@@ -89,6 +90,7 @@ func (s *TrackLocalCloudRTP) WriteFrame(frame *Frame) error {
 
 	samples := uint32(1 * clockRate)
 	//frameData := t.EncodeFrame()
+	s.pcPayloader.FrameCounter = frame.FrameNr
 	packets := p.Packetize(frame.Data, samples)
 
 	writeErrs := []error{}
@@ -99,7 +101,6 @@ func (s *TrackLocalCloudRTP) WriteFrame(frame *Frame) error {
 		}
 		counter += 1
 	}
-	s.currentFrame++
 	if len(writeErrs) > 0 {
 		//println(writeErrs)
 	}

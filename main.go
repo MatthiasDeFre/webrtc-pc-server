@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -15,7 +16,6 @@ import (
 	"github.com/pion/interceptor/pkg/gcc"
 	"github.com/pion/interceptor/pkg/nack"
 	"github.com/pion/interceptor/pkg/twcc"
-	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v3"
 )
 
@@ -33,35 +33,39 @@ var proxyConn *ProxyConnection
 var peerConnections map[uint64]*PeerConnection
 var api *webrtc.API
 var nClients int
+var pcMapMutex sync.Mutex
 
 // var frameResultwriter *FrameResultWriter
 var virtualWallFilterIp string
+var useProxy *bool
+var isIndi *bool
 
 func main() {
 	virtualWallIp := flag.String("v", "", "Use virtual wall ip filter")
-	proxyPort := flag.String("p", ":0", "Use as a proxy with specified port")
+	useProxy = flag.Bool("p", false, "Use Proxy Input")
+	capPort := flag.String("cap", ":8000", "Use as a proxy with specified port")
+	srvPort := flag.String("srv", ":8001", "Use as a proxy with specified port")
 	contentDirectory := flag.String("d", "content_jpg", "Content directory")
 	contentFrameRate := flag.Int("f", 30, "Frame rate that is used when using files instead of proxy")
 	signalingIP := flag.String("s", "0.0.0.0:5678", "Signaling server IP")
 	numberOfClients := flag.Int("c", -1, "Number of clients")
 	//resultDirectory := flag.String("m", "", "Result directory")
-	isIndi := flag.Bool("i", false, "Use Individual Encoding")
+	isIndi = flag.Bool("i", false, "Use Individual Encoding")
 	flag.Parse()
 	//frameResultwriter = NewFrameResultWriter(*resultDirectory, 5)
 	//fileCont, _ := os.OpenFile(*resultDirectory+"_cont.csv", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	//fileCont.WriteString("time;estimated_bitrate;loss_rate;delay_rate;loss\n")
 	nClients = *numberOfClients
-	useProxy := false
-	if *proxyPort != ":0" {
-		proxyConn = NewProxyConnection(peerConnections, *isIndi)
-		fmt.Println(*proxyPort)
-		proxyConn.SetupConnection(*proxyPort)
-		useProxy = true
+	if *useProxy {
+		proxyConn = NewProxyConnection(*isIndi)
+		proxyConn.SetupConnection(*capPort, *srvPort)
 
 	}
 	var transcoder Transcoder
-	if useProxy {
-		transcoder = NewTranscoderRemote(proxyConn)
+	if *useProxy {
+		if !*isIndi {
+			transcoder = NewTranscoderRemote(proxyConn)
+		}
 	} else {
 		transcoder = NewTranscoderFile(*contentDirectory, uint32(*contentFrameRate))
 	}
@@ -127,67 +131,20 @@ func main() {
 	// Infinite loop sending aggregate frames every 33ms
 
 	//select {}
-	for {
-		allReady := false
-		if nClients > -1 {
-			if clientCounter == uint64(nClients) {
-				tempReady := true
-				for _, pc := range peerConnections {
-					tempReady = tempReady && pc.isReady
-				}
-				allReady = tempReady
-			}
-		} else {
-			allReady = true
-		}
-		if allReady {
-			frame := transcoder.NextFrame()
+	if !*isIndi {
+		for {
+			frameNr, frame := transcoder.NextFrame()
+			pcMapMutex.Lock()
 			for _, pc := range peerConnections {
 				// Get frame from proxy = channel (maybe ring channel)
 				if pc.isReady {
-					go pc.SendFrame(transcoder.EncodeFrame(frame, pc.GetFrameCounter(), pc.GetBitrate()))
-
-					//transcoder.UpdateBitrate(uint32(75_000_000))
-					/*if transcoder.GetFrameCounter()%5 == 0 {
-						vLossRate, _ := pc.estimator.GetStats()["lossTargetBitrate"]
-						vDelayRate, _ := pc.estimator.GetStats()["delayTargetBitrate"]
-						vLoss, _ := pc.estimator.GetStats()["averageLoss"]
-						timestamp := time.Now().UnixNano() / int64(time.Millisecond)
-						data := fmt.Sprintf("%d;%d;%d;%d;%.2f\n", timestamp, uint32(pc.estimator.GetTargetBitrate()), vLossRate, vDelayRate, vLoss)
-						fileCont.WriteString(data)
-					}
-					transcoder.UpdateBitrate(uint32(pc.estimator.GetTargetBitrate()))
-					if frame := transcoder.EncodeFrame(frameData); frame != nil {
-						frameResultwriter.CreateRecord(transcoder.GetFrameCounter(), time.Now().UnixNano()/int64(time.Millisecond), true)
-						frameResultwriter.SetEstimatedBitrate(transcoder.GetFrameCounter(), uint32(pc.estimator.GetTargetBitrate()))
-						frameResultwriter.SetSizeInBytes(transcoder.GetFrameCounter(), frame.FrameLen, true)
-
-						pc.track.WriteFrame(frame)
-						if pc.track.currentFrame%100 == 0 {
-							println("MULTIFRAME", pc.track.currentFrame, pc.clientID, len(frame.Data))
-						}
-
-						frameResultwriter.SetProcessingCompleteTimestamp(transcoder.GetFrameCounter(), time.Now().UnixNano()/int64(time.Millisecond), true)
-						frameResultwriter.SaveRecord(transcoder.GetFrameCounter(), true)
-					}*/
-
+					go pc.SendFrame(transcoder.EncodeFrame(frame, frameNr, pc.GetBitrate()))
 				}
 			}
-			transcoder.IncrementFrameCounter()
+			pcMapMutex.Unlock()
 		}
-
-		//if transcoder.GetFrameCounter()%100 == 0 {
-		//	println("FRAME", transcoder.GetFrameCounter(), "send to all clients")
-		//
-		//}
-
-		/*if transcoder.GetFrameCounter() == 99 {
-			println("FRAME", transcoder.GetFrameCounter(), "send to all clients")
-			time.Sleep(10 * time.Second)
-			os.Exit(0)
-		}*/
-		//transcoder.IncrementFrameCounter()
-
+	} else {
+		select {}
 	}
 }
 func getCodecCapability() webrtc.RTPCodecCapability {
@@ -219,87 +176,57 @@ func NewMediaEngine() *webrtc.MediaEngine {
 	}
 	m.RegisterFeedback(webrtc.RTCPFeedback{Type: "nack"}, webrtc.RTPCodecTypeVideo)
 	m.RegisterFeedback(webrtc.RTCPFeedback{Type: "nack", Parameter: "pli"}, webrtc.RTPCodecTypeVideo)
-	m.RegisterFeedback(webrtc.RTCPFeedback{Type: webrtc.TypeRTCPFBTransportCC}, webrtc.RTPCodecTypeVideo)
-	if err := m.RegisterHeaderExtension(webrtc.RTPHeaderExtensionCapability{URI: sdp.TransportCCURI}, webrtc.RTPCodecTypeVideo); err != nil {
+	//m.RegisterFeedback(webrtc.RTCPFeedback{Type: webrtc.TypeRTCPFBTransportCC}, webrtc.RTPCodecTypeVideo)
+	/*if err := m.RegisterHeaderExtension(webrtc.RTPHeaderExtensionCapability{URI: sdp.TransportCCURI}, webrtc.RTPCodecTypeVideo); err != nil {
 		panic(err)
 	}
 
 	m.RegisterFeedback(webrtc.RTCPFeedback{Type: webrtc.TypeRTCPFBTransportCC}, webrtc.RTPCodecTypeAudio)
 	if err := m.RegisterHeaderExtension(webrtc.RTPHeaderExtensionCapability{URI: sdp.TransportCCURI}, webrtc.RTPCodecTypeAudio); err != nil {
 		panic(err)
-	}
+	}*/
 	return m
 }
 
-func NewWebrtcAPI(peerConnections map[uint64]*PeerConnection) *webrtc.API {
-	settingEngine := webrtc.SettingEngine{}
-	settingEngine.SetSCTPMaxReceiveBufferSize(16 * 1024 * 1024)
-
-	i := &interceptor.Registry{}
-	m := NewMediaEngine()
-	// Sender side
-	congestionController, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
-		return gcc.NewSendSideBWE(gcc.SendSideBWEMinBitrate(75_000*8), gcc.SendSideBWEInitialBitrate(75_000_000), gcc.SendSideBWEMaxBitrate(262_744_320))
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	congestionController.OnNewPeerConnection(func(id string, estimator cc.BandwidthEstimator) {
-		println("NEW BW ESTIMATOR")
-		peerConnections[clientCounter-1].estimator = estimator
-	})
-
-	if err = webrtc.ConfigureTWCCHeaderExtensionSender(m, i); err != nil {
-		panic(err)
-	}
-
-	responder, _ := nack.NewResponderInterceptor()
-
-	generator, err := twcc.NewSenderInterceptor(twcc.SendInterval(10 * time.Millisecond))
-	if err != nil {
-		panic(err)
-	}
-
-	nackGenerator, _ := nack.NewGeneratorInterceptor()
-
-	i.Add(congestionController)
-	i.Add(responder)
-	i.Add(generator)
-	i.Add(nackGenerator)
-
-	return webrtc.NewAPI(webrtc.WithSettingEngine(settingEngine), webrtc.WithInterceptorRegistry(i), webrtc.WithMediaEngine(m))
-}
-
 func wsNewUserCb(wsConn *websocket.Conn) {
-	peerConnections[clientCounter] = NewPeerConnection(clientCounter, wsConn, wsHandlerMessageCbFunc)
+	pcMapMutex.Lock()
+	defer pcMapMutex.Unlock()
+	fmt.Printf("New Websocket user ID: %d\n", clientCounter)
+	peerConnections[clientCounter] = NewPeerConnection(clientCounter, wsConn, wsHandlerMessageCbFunc, *isIndi)
+	peerConnections[clientCounter].SetOnConnectedCb(OnPeerConnected)
+	peerConnections[clientCounter].SetOnDisconnectedCb(OnPeerDisconnected)
+	peerConnections[clientCounter].Init()
 	clientCounter++
 	//if int(clientCounter) == nClients {
 	//	proxyConn.StartListening()
 	//}
 }
 
-func wsHandlerMessageCbFunc(wsPacket WebsocketPacket) {
+func wsHandlerMessageCbFunc(wsPacket WebsocketPacket, pc *PeerConnection) {
 	switch wsPacket.MessageType {
-	case 1: // hello
-		println("Received hello")
-		peerConnections[wsPacket.ClientID].Init(api)
 	case 3: // answer
-		println("Received answer")
 		answer := webrtc.SessionDescription{}
-		err := json.Unmarshal([]byte(wsPacket.Message), &answer)
-		if err != nil {
+		if err := json.Unmarshal([]byte(wsPacket.Message), &answer); err != nil {
 			panic(err)
 		}
-		peerConnections[wsPacket.ClientID].SetRemoteDescription(answer)
-
-	case 4: // candidate
-		println("Received candidate")
-		candidate := wsPacket.Message
-		if candidateErr := peerConnections[wsPacket.ClientID].AddICECandidate(candidate); candidateErr != nil {
-			panic(candidateErr)
+		if err := pc.SetRemoteDescription(answer); err != nil {
+			panic(err)
 		}
-	case 10: //panzoom
+		for _, c := range pc.pendingCandidatesString {
+			if candidateErr := pc.AddICECandidate(c); candidateErr != nil {
+				panic(candidateErr)
+			}
+		}
+	case 4: // candidate
+		desc := pc.GetRemoteDescription()
+		if desc == nil {
+			pc.pendingCandidatesString = append(pc.pendingCandidatesString, wsPacket.Message)
+		} else {
+			if candidateErr := pc.AddICECandidate(wsPacket.Message); candidateErr != nil {
+				panic(candidateErr)
+			}
+		}
+	case 10: //panzoom TODO rework
 		bufBinary := bytes.NewBuffer([]byte(wsPacket.Message))
 		var pz PanZoom
 		if err := binary.Read(bufBinary, binary.LittleEndian, &pz); err == nil {
@@ -310,13 +237,24 @@ func wsHandlerMessageCbFunc(wsPacket WebsocketPacket) {
 	}
 }
 
-func wsMessageReceivedCb(wsPacket WebsocketPacket) {
-
-}
-
 func VirtualWallFilter(addr net.IP) bool {
 	if addr.String() == virtualWallFilterIp {
 		return true
 	}
 	return false
+}
+
+func OnPeerConnected(clientID uint64) {
+	if *useProxy {
+		proxyConn.OnNewClientConnected(uint32(clientID))
+	}
+}
+
+func OnPeerDisconnected(clientID uint64) {
+	pcMapMutex.Lock()
+	defer pcMapMutex.Unlock()
+	delete(peerConnections, clientID)
+	if *useProxy {
+		proxyConn.OnNewClientDisconnected(uint32(clientID))
+	}
 }
